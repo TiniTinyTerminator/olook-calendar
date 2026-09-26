@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.4
+
+**Security**
+- The size cap on calendar reads now holds in the pipe. 1.0.3 checked the
+  answer's size only after the whole of it had been collected in the shell,
+  so an older Olook -- asked the old, unbounded way -- could still make the
+  shell hold as much as it sent. Every read, the compatibility retry
+  included, now runs the engine behind `head -c`: at most 8 MiB and one byte
+  of its answer and 64 KiB of its errors ever reach the shell, and `timeout`
+  ends the engine itself after 25 seconds. A read cut off at the limit is
+  reported and not parsed; one ended by the timeout says so.
+
 ## 1.0.3
 
 **Security**

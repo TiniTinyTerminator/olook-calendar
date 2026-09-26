@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ttt.olook-calendar",
   "name": "Olook Calendar",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "TiniTinyTerminator",
   "license": "MIT",
   "description": "The clock and the calendar in one: date and time in the bar, a month marked with the days you have something on, the agenda behind it, and a notification before an appointment starts.",

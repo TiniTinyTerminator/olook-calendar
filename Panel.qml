@@ -359,7 +359,13 @@ Panel {
     // without them.
     if (root.boundedReads)
       command = command.concat(["--max-events", String(root.maxEvents), "--brief"])
-    var process = readerComponent.createObject(root, { command: command })
+    // Every read -- the bounded one and the compatibility retry alike -- goes
+    // through the wrapper, which caps what can reach this process.
+    var process = readerComponent.createObject(root, {
+      command: ["bash", "-c", root.cappedRead, "olook-calendar-read",
+                String(root.maxAnswerBytes), String(root.maxErrorBytes),
+                String(root.engineTimeoutSec)].concat(command)
+    })
     if (!process) {
       root.loading = false
       root.trouble = "Could not start the calendar engine."
@@ -373,8 +379,37 @@ Panel {
   // backstop, and the deadline ends a read that never finishes, which would
   // otherwise leave "loading" set and every later read returning early.
   readonly property int maxEvents: 1500
-  readonly property int maxAnswerChars: 8 * 1024 * 1024
+  readonly property int maxAnswerBytes: 8 * 1024 * 1024
+  readonly property int maxErrorBytes: 64 * 1024
+  readonly property int engineTimeoutSec: 25
   readonly property int readDeadlineMs: 30000
+
+  // The engine runs behind this, so the caps hold in the pipe, before any of
+  // its output reaches the shell: StdioCollector keeps everything it is
+  // given until the process ends, so checking the size afterwards would be
+  // too late. stdout passes through head -c, one byte past the limit so an
+  // oversized answer can be told from one that fits; stderr is capped the same
+  // way; and timeout ends the engine itself, so nothing is left running when
+  // the read is abandoned. Past the limit, head exits and the engine gets
+  // SIGPIPE on its next write. pipefail carries timeout's exit status out,
+  // so a read that ran out of time is not mistaken for an empty one.
+  readonly property string cappedRead:
+    'set -o pipefail; max="$1"; errmax="$2"; limit="$3"; shift 3; '
+    + '{ timeout -k 2 "$limit" "$@" 2>&1 1>&3 3>&- | head -c "$errmax" >&2; } '
+    + '3>&1 | head -c "$((max + 1))"'
+
+  // Bytes, not characters: the answer is UTF-8 and the cap is on bytes.
+  function utf8Length(text) {
+    var bytes = 0
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i)
+      if (code < 0x80) bytes += 1
+      else if (code < 0x800) bytes += 2
+      else if (code >= 0xD800 && code <= 0xDBFF) { bytes += 4; i++ }
+      else bytes += 3
+    }
+    return bytes
+  }
   property bool boundedReads: true
 
   // A process per read, made when the read starts, which is how Olook's own
@@ -404,13 +439,16 @@ Panel {
 
       onExited: function (exitCode) {
         root.loading = false
-        if (proc.timedOut) {
+        // 124: timeout ended the engine; 137: it had to be killed as well.
+        if (proc.timedOut || exitCode === 124 || exitCode === 137) {
           root.trouble = "The calendar took too long to answer; trying again later."
           Qt.callLater(function () { proc.destroy() })
           return
         }
         var text = String(procOut.text || "")
-        if (text.length > root.maxAnswerChars) {
+        // Cut off in the pipe one byte past the limit: an answer that long
+        // did not fit, and is not parsed.
+        if (text.length > root.maxAnswerBytes / 4 && root.utf8Length(text) > root.maxAnswerBytes) {
           root.trouble = "The calendar answered with more than this widget reads."
           Qt.callLater(function () { proc.destroy() })
           return
@@ -427,14 +465,15 @@ Panel {
         } catch (error) {
           // Nothing at all back is the engine missing: this widget reads the
           // calendar through Olook and cannot on its own.
-          root.trouble = String(procErr.text || "").trim()
+          // One line of the engine's complaint, not all of it.
+          root.trouble = String(procErr.text || "").trim().split("\n")[0].slice(0, 200)
             || "The calendar is read through Olook, which is not installed: "
                + "omarchy plugin add https://github.com/TiniTinyTerminator/Olook.git"
           Qt.callLater(function () { proc.destroy() })
           return
         }
         if (!payload || payload.ok === false) {
-          root.trouble = String((payload && payload.error) || "")
+          root.trouble = String((payload && payload.error) || "").split("\n")[0].slice(0, 200)
           root.events = (payload && payload.events) || []
         } else {
           root.trouble = ""
